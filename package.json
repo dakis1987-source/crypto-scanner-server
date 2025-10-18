@@ -1,14 +1,24 @@
 {
-  "name": "adaptive-crypto-scanner",
+  "name": "crypto-scanner-bot-server",
   "version": "1.0.0",
-  "description": "24/7 Adaptive Crypto Scanning Tool with Firestore Persistence",
+  "description": "A 24/7 crypto screening and reporting bot using Firebase and Telegram.",
   "main": "crypto_scanner_server.js",
-  "type": "module",
   "scripts": {
     "start": "node crypto_scanner_server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "firebase": "^10.12.3"
-  }
+    "express": "^4.18.2",
+    "firebase-admin": "^11.5.0",
+    "node-fetch": "^2.6.7",
+    "telegraf": "^4.11.2"
+  },
+  "keywords": [
+    "crypto",
+    "scanner",
+    "telegram",
+    "node",
+    "firebase"
+  ],
+  "author": "",
+  "license": "ISC"
 }
