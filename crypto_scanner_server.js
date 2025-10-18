@@ -1,81 +1,33 @@
 // This script is the final, refactored version of the Adaptive Multi-Coin Prediction Scanner.
-// 
-// KEY CHANGES:
-// 1. Removed `setInterval`. The script now runs once per HTTP request (via Express).
-// 2. Integrated **Firestore** for persistent storage of the learned weights and accuracy.
-// 3. On startup, it loads the last saved weights. After each scan, it saves the new weights.
 
-// --- FIREBASE IMPORTS (Requires Node.js environment) ---
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection } from 'firebase/firestore';
+// --- SERVER IMPORTS (Using 'require' for better Node.js compatibility) ---
+const express = require('express');
+const https = require('https'); // For Binance/Telegram calls
 
-// --- SERVER IMPORTS (Requires Express) ---
-import express from 'express';
-import https from 'https'; // For Binance/Telegram calls
+// --- FIREBASE IMPORTS (Requires 'firebase' package in package.json) ---
+const { initializeApp } = require('firebase/app');
+const { getFirestore, doc, setDoc, getDoc } = require('firebase/firestore');
 
 // =====================================================================
-//                          --- FIREBASE SETUP ---
+//                   --- CONFIGURATION LOADING & STATE ---
 // =====================================================================
-let db, auth;
-let userId;
+
+// Load configuration from standard environment variables
+let db;
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Global variables provided by the Canvas environment for Firestore
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// Firebase Configuration (MUST be set as FIREBASE_CONFIG JSON string in Render ENV)
+const FIREBASE_CONFIG_JSON = process.env.FIREBASE_CONFIG; 
+let firebaseConfig = {};
 
-// The document path where the learned weights are stored. This is PUBLIC data
-// so the single running server instance can access it permanently.
-const LEARNING_DOC_PATH = `/artifacts/${appId}/public/data/crypto_scanner/adaptive_weights`;
+// Telegram Configuration (MUST be set as environment variables in Render)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "YOUR_TELEGRAM_BOT_TOKEN_HERE"; 
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "YOUR_TELEGRAM_CHAT_ID_HERE";
 
-async function initializeFirebase() {
-    try {
-        if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) {
-             console.error("FATAL: Firebase config is missing. Persistence will fail.");
-             return false;
-        }
-        
-        const firebaseApp = initializeApp(firebaseConfig);
-        db = getFirestore(firebaseApp);
-        auth = getAuth(firebaseApp);
-        
-        // Authenticate using the provided custom token or anonymously
-        if (initialAuthToken) {
-            await signInWithCustomToken(auth, initialAuthToken);
-        } else {
-            await signInAnonymously(auth);
-        }
-        
-        userId = auth.currentUser?.uid || 'anonymous-user';
-        console.log(`[DB] Firebase initialized. User ID: ${userId}`);
-        return true;
-        
-    } catch (e) {
-        console.error("FATAL: Could not initialize or authenticate Firebase:", e.message);
-        return false;
-    }
-}
-
-// =====================================================================
-//                          --- CONFIGURATION & STATE ---
-// =====================================================================
-
-// --- Binance API Config ---
-const BINANCE_API_URL = "https://api.binance.com/api/v3/klines";
-const EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/ticker/24hr";
-const ORDER_BOOK_URL = "https://api.binance.com/api/v3/depth";
-const TARGET_INTERVAL = "1h"; 
-const LOOKBACK_PERIOD = 200; 
-const DYNAMIC_SCAN_LIMIT = 300; 
-const LEARNING_TRADE_COUNT = 50; 
-const LOOKAHEAD_CANDLES = 4; 
-
-// --- Telegram Config ---
-const TELEGRAM_BOT_TOKEN = "8308285216:AAGJtJ2NA-Pg3dXY7-3N_MboLmCoqaYsgrA"; 
-const TELEGRAM_CHAT_ID = "5842818456";
+// The document path where the learned weights are stored. 
+// Note: We use a placeholder path since we removed __app_id.
+const LEARNING_DOC_PATH = "public/data/crypto_scanner/adaptive_weights"; 
 
 // --- Adaptive Weights State (Initial Hardcoded Defaults) ---
 let CURRENT_WEIGHTS = {
@@ -88,8 +40,54 @@ let HISTORICAL_ACCURACY = '0.0';
 const OBI_WEIGHT = 15; // STATIC weight for real-time Order Book Imbalance
 const LEARNING_RATE = 0.5; 
 
+// --- Binance API Config ---
+const BINANCE_API_URL = "https://api.binance.com/api/v3/klines";
+const EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/ticker/24hr";
+const ORDER_BOOK_URL = "https://api.binance.com/api/v3/depth";
+const TARGET_INTERVAL = "1h"; 
+const LOOKBACK_PERIOD = 200; 
+const DYNAMIC_SCAN_LIMIT = 300; 
+const LEARNING_TRADE_COUNT = 50; 
+const LOOKAHEAD_CANDLES = 4; 
+
+
 // =====================================================================
-//                          --- FIRESTORE PERSISTENCE ---
+//                        --- FIREBASE SETUP ---
+// =====================================================================
+
+async function initializeFirebase() {
+    try {
+        if (!FIREBASE_CONFIG_JSON) {
+            console.error("FATAL: FIREBASE_CONFIG environment variable is missing.");
+            return false;
+        }
+
+        try {
+            firebaseConfig = JSON.parse(FIREBASE_CONFIG_JSON);
+        } catch (e) {
+            console.error("FATAL: Could not parse FIREBASE_CONFIG JSON:", e.message);
+            return false;
+        }
+        
+        if (Object.keys(firebaseConfig).length === 0) {
+            console.error("FATAL: Firebase config is empty.");
+            return false;
+        }
+        
+        // Initialize Firebase App and Firestore (Auth is not used for backend server)
+        const firebaseApp = initializeApp(firebaseConfig);
+        db = getFirestore(firebaseApp);
+        console.log(`[DB] Firebase initialized successfully.`);
+        return true;
+        
+    } catch (e) {
+        console.error("FATAL: Could not initialize Firebase:", e.message);
+        return false;
+    }
+}
+
+// =====================================================================
+//                        --- FIRESTORE PERSISTENCE ---
 // =====================================================================
 
 /**
@@ -108,6 +106,8 @@ async function loadWeights() {
             console.log(`[DB] Weights loaded successfully. Accuracy: ${HISTORICAL_ACCURACY}%`);
         } else {
             console.log("[DB] No weights found. Starting with default hard-coded values.");
+            // Optionally, save defaults if none exist
+            await saveWeights(CURRENT_WEIGHTS, HISTORICAL_ACCURACY);
         }
     } catch (e) {
         console.error("[DB ERROR] Failed to load weights:", e.message);
@@ -133,12 +133,12 @@ async function saveWeights(newWeights, newAccuracy) {
 }
 
 // =====================================================================
-//                          --- UTILITY FUNCTIONS ---
+//                        --- UTILITY FUNCTIONS ---
 // =====================================================================
 
 function sendTelegramMessage(message) {
     if (TELEGRAM_BOT_TOKEN.includes("YOUR_TELEGRAM_BOT_TOKEN_HERE") || TELEGRAM_CHAT_ID.includes("YOUR_TELEGRAM_CHAT_ID_HERE")) {
-        console.error("TELEGRAM ERROR: Please configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.");
+        console.error("TELEGRAM ERROR: Please configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables in Render.");
         return;
     }
     const encodedMessage = encodeURIComponent(message);
@@ -148,10 +148,14 @@ function sendTelegramMessage(message) {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
-            const result = JSON.parse(data);
-            if (!result.ok) {
-                console.error(`Telegram API Failed: ${result.description}`);
-            } // else { console.log(`[Telegram] Message sent successfully at ${new Date().toLocaleTimeString()}.`); }
+            try {
+                const result = JSON.parse(data);
+                if (!result.ok) {
+                    console.error(`Telegram API Failed: ${result.description}`);
+                }
+            } catch (e) {
+                 console.error(`Telegram Response Parsing Error: ${e.message}`);
+            }
         });
     }).on('error', (err) => {
         console.error(`Telegram Network Error: ${err.message}`);
@@ -320,6 +324,7 @@ const averageWeights = (allLearnedResults) => {
         averagedWeights[key] = Math.max(5, Math.round(averagedWeights[key] * normalizationFactor));
     }
     
+    // Re-normalize after min check
     const finalTotal = Object.values(averagedWeights).reduce((a, b) => a + b, 0);
     const finalNormalizationFactor = TARGET_TOTAL_WEIGHT / finalTotal;
     for (const key of indicatorKeys) {
@@ -514,7 +519,7 @@ function fetchBinanceData(symbol, interval, limit) {
 }
 
 // =====================================================================
-//                          --- MAIN SCANNER LOGIC ---
+//                        --- MAIN SCANNER LOGIC ---
 // =====================================================================
 
 async function scanAndReport() {
@@ -567,8 +572,8 @@ async function scanAndReport() {
              const data = await fetchBinanceData(symbol, TARGET_INTERVAL, LOOKBACK_PERIOD);
 
              if (data.length < LEARNING_TRADE_COUNT + LOOKAHEAD_CANDLES) {
-                console.log(`[WARN] Not enough data for ${symbol}. Skipping learning cycle.`);
-                continue;
+                 console.log(`[WARN] Not enough data for ${symbol}. Skipping learning cycle.`);
+                 continue;
              }
 
              const { newWeights, accuracy } = calculate_and_adjust_weights(data, currentWeightsSnapshot);
@@ -651,7 +656,7 @@ async function scanAndReport() {
         }
     }
     
-    process.stdout.write("                                                                                                      \r"); 
+    process.stdout.write("                                                                                                                              \r"); 
     console.log(`[COMPLETE] Scan finished. ${results.length} coins passed the intelligence, confidence, and volatility filters.`);
 
     // 4. Rank and Send Report
@@ -675,8 +680,8 @@ function formatTelegramReport(results, historicalAccuracy, learnedWeights) {
     message += `_Time: ${new Date().toLocaleTimeString()} UTC_\n`;
     message += `_Learned Accuracy: ${historicalAccuracy}% (Avg. across 5 market caps)_\n`;
     message += `_Active Weights (Total 100):_\n`;
-    message += `_  *Learned:* OBV ${learnedWeights.OBV} | STOCH ${learnedWeights.STOCH} | OI ${learnedWeights.OI_PROXY} | MACD ${learnedWeights.MACD}_\n`;
-    message += `_  *Static:* DWOBI ${OBI_WEIGHT} (Depth-Weighted Order Book Pressure)_\n\n`;
+    message += `_  *Learned:* OBV ${learnedWeights.OBV} | STOCH ${learnedWeights.STOCH} | OI ${learnedWeights.OI_PROXY} | MACD ${learnedWeights.MACD}_\n`;
+    message += `_  *Static:* DWOBI ${OBI_WEIGHT} (Depth-Weighted Order Book Pressure)_\n\n`;
     
     message += `*🟢 TOP 5 POTENTIAL GAINERS (LONG)*\n`;
     if (topBullish.length === 0) {
@@ -704,10 +709,10 @@ function formatTelegramReport(results, historicalAccuracy, learnedWeights) {
 
 
 // =====================================================================
-//                          --- EXPRESS SERVER SETUP ---
+//                        --- EXPRESS SERVER SETUP ---
 // =====================================================================
 
-// Middleware to parse JSON bodies (not strictly needed here, but good practice)
+// Middleware to parse JSON bodies
 app.use(express.json()); 
 
 // Root endpoint just to keep the service alive
@@ -717,10 +722,14 @@ app.get('/', (req, res) => {
 
 // The endpoint that will be hit by the external Cron Job (UptimeRobot)
 app.get('/scan', async (req, res) => {
-    // Prevent multiple concurrent scans if possible, but for a cron job, a simple check suffices
+    // Check for DB readiness
     if (!db) {
-        res.status(503).send("Database not initialized. Cannot run scan.");
-        return;
+        // If the DB failed to initialize on startup, try once more
+        const isDbReady = await initializeFirebase();
+        if (!isDbReady) {
+            res.status(503).send("Database not initialized. Cannot run scan.");
+            return;
+        }
     }
     
     // Run the main logic
@@ -736,12 +745,15 @@ app.get('/scan', async (req, res) => {
 
 // Start Initialization and Server
 (async () => {
+    // 1. Initialize Firebase and check config
     const isDbReady = await initializeFirebase();
+    
+    // 2. Load persistent weights if DB is ready
     if (isDbReady) {
-        await loadWeights(); // Load persistent weights before starting the server
+        await loadWeights(); 
     }
 
-    // Start listening on the designated port
+    // 3. Start listening on the designated port
     app.listen(PORT, () => {
         console.log(`Server listening on port ${PORT}`);
         console.log("Waiting for external trigger on /scan endpoint...");

@@ -1,17 +1,16 @@
 {
   "name": "crypto-scanner-server",
   "version": "1.0.0",
-  "description": "Server for the crypto scanner application.",
-  "main": "crypto_scanner_server.js", 
+  "description": "A Node.js server for the Crypto Scanner Bot",
+  "main": "crypto_scanner_server.js",
   "scripts": {
-    "start": "node crypto_scanner_server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node crypto_scanner_server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.18.2",
-    "firebase": "^10.0.0"
+    "firebase": "^10.12.3"
   }
 }
