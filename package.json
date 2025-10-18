@@ -1,0 +1,14 @@
+{
+  "name": "adaptive-crypto-scanner",
+  "version": "1.0.0",
+  "description": "24/7 Adaptive Crypto Scanning Tool with Firestore Persistence",
+  "main": "crypto_scanner_server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node crypto_scanner_server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "firebase": "^10.12.3"
+  }
+}
