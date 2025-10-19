@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "description": "Server for the crypto scanner application.",
   "main": "crypto_scanner_server.js",
-  "type": "module",
   "scripts": {
-    "start": "node crypto_scanner_server.js",
+    "start": "node crypto_scanner_server.cjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
