@@ -1,48 +1,48 @@
 // --- CommonJS Require Statements ---
-// We must use 'require' instead of 'import' because this file is named .cjs 
-// and "type": "module" is NOT set in package.json.
-
-// 1. Import core packages (using 'require' for express)
 const express = require('express');
 
-// 2. Import Firebase packages (using the server-side 'firebase-admin' is highly recommended for security, 
-// but sticking to your current 'firebase/app' and 'firebase/firestore' for now.)
-// NOTE: For server-side Node.js, you should ideally use 'firebase-admin' 
-// for secure, unauthenticated access to the database.
-const { initializeApp } = require('firebase/app');
-const { getFirestore, doc, getDoc } = require('firebase/firestore');
+// 1. Import Firebase Admin SDK modules
+// The Admin SDK provides secure, privileged access for backend services.
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 
 // --- Server Setup ---
 const app = express();
-// PORT is read from the Render environment variable
 const PORT = process.env.PORT || 3000;
-// Note: We will fix the security issue with this key next.
-const FIREBASE_CONFIG = process.env.FIREBASE_CONFIG; 
+
+// IMPORTANT: We now use the Service Account Key for server-side security.
+const GCLOUD_SERVICE_ACCOUNT_KEY = process.env.GCLOUD_SERVICE_ACCOUNT_KEY; 
+// The old FIREBASE_CONFIG is no longer needed but kept as an example of bad practice.
+// const FIREBASE_CONFIG = process.env.FIREBASE_CONFIG; 
 
 // Middleware to parse JSON bodies
 app.use(express.json());
 
-// --- Firebase Initialization ---
+// --- Firebase Initialization (Admin SDK) ---
 
 let db;
-let firebaseApp;
 
 try {
-    // Parse the config JSON stored in the environment variable
-    const parsedConfig = JSON.parse(FIREBASE_CONFIG);
-    
-    // Initialize Firebase
-    firebaseApp = initializeApp(parsedConfig);
-    db = getFirestore(firebaseApp);
-    console.log('[DB] Firebase initialized successfully.');
+    if (!GCLOUD_SERVICE_ACCOUNT_KEY) {
+        // We throw an error if the key is missing to ensure secure setup
+        throw new Error("GCLOUD_SERVICE_ACCOUNT_KEY environment variable is missing. Cannot initialize Admin SDK.");
+    }
+    
+    // Parse the service account key JSON string
+    const serviceAccount = JSON.parse(GCLOUD_SERVICE_ACCOUNT_KEY);
+    
+    // Initialize Admin SDK with the service account credentials
+    initializeApp({
+        credential: cert(serviceAccount)
+    });
+    
+    // Get the Firestore instance (Admin SDK version)
+    db = getFirestore();
+    console.log('[DB] Firebase Admin SDK initialized successfully. (Secure Mode)');
 
 } catch (error) {
-    // IMPORTANT: Check if the error is just due to empty config or a parsing failure
-    if (FIREBASE_CONFIG === undefined) {
-        console.error('FATAL: FIREBASE_CONFIG environment variable is missing.');
-    }
-    console.error('FATAL: Firebase config is missing or invalid. Persistence will fail.', error.message);
-    // If initialization fails, db remains undefined, and later functions should check for it.
+    console.error('FATAL: Firebase Admin SDK initialization failed. Persistence will fail.', error.message);
+    db = null; // Ensure db is null if initialization failed.
 }
 
 
@@ -53,45 +53,50 @@ app.get('/', (req, res) => {
     res.status(200).send('Crypto Scanner Server is running.');
 });
 
-// Example route to trigger the scanning/bot logic (you might call this from a webhook or cron job)
+// Example route to trigger the scanning/bot logic 
 app.post('/scan', async (req, res) => {
-    console.log('Waiting for external trigger on /scan endpoint...');
+    console.log('External trigger received on /scan endpoint. Initiating scan...');
     
-    // Basic check to see if database connection is available
     if (!db) {
         return res.status(500).json({ 
-            error: "Database initialization failed. Cannot perform scan.", 
-            details: "Please ensure the FIREBASE_CONFIG environment variable is set and valid." 
+            error: "Database not available. Check Admin SDK initialization logs.", 
+            details: "The service account key might be missing or invalid." 
         });
     }
 
-    // === PLACE YOUR CRYPTO SCANNING LOGIC HERE ===
     try {
-        console.log('Attempting to read settings from Firestore...');
-        
-        // Example: Reading a document (This is now possible thanks to the added 'doc' and 'getDoc' imports)
-        // IMPORTANT: This assumes you have 'settings' collection and 'global' document.
-        // This read will likely fail due to security rules if not using 'firebase-admin' or server keys.
-        const docRef = doc(db, "settings", "global");
-        const docSnap = await getDoc(docRef);
-        
-        if (docSnap.exists()) {
-            console.log("Global settings found:", docSnap.data());
-        } else {
-            console.log("No global settings document found.");
-        }
+        // === START OF YOUR SCANNING LOGIC ===
+        console.log('Attempting secure read from Firestore...');
 
-        // For now, just a placeholder response
+        // Admin SDK uses different collection/doc methods than the client SDK.
+        // Admin SDK equivalent of: const docRef = doc(db, "settings", "global");
+        const docRef = db.collection("settings").doc("global");
+        
+        // Admin SDK equivalent of: const docSnap = await getDoc(docRef);
+        const docSnap = await docRef.get();
+        
+        if (docSnap.exists) {
+            console.log("✅ Global settings read successfully:", docSnap.data());
+            // Here you would continue with your scanning logic
+            // Example: runScanner(docSnap.data());
+        } else {
+            console.log("⚠️ No global settings document found at 'settings/global'.");
+        }
+        
+        // Example Telegram Notification (Requires TELEGRAM_BOT_TOKEN and logic)
+        // const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN; 
+        // if (telegramBotToken) { await sendTelegramNotification("Scan complete!"); }
+
         res.json({ 
-            message: 'Scan triggered successfully (Placeholder).', 
-            status: 'Database read attempted.' 
+            message: 'Scan triggered and database access successful (Placeholder).', 
+            status: 'Ready for scanning logic.' 
         });
 
     } catch (dbError) {
-        // This catch block will trigger when the Firebase security rules block the operation.
-        console.error('Firestore Operation Failed (Likely Security Issue):', dbError.message);
+        // This block will now only catch critical API/network errors, not permission denied.
+        console.error('Firestore Operation Failed (Admin SDK Error):', dbError.message);
         res.status(500).json({ 
-            error: "Firestore operation failed (Security/Permission error).", 
+            error: "Server-side Firestore operation failed.", 
             details: dbError.message 
         });
     }
@@ -108,7 +113,7 @@ app.listen(PORT, () => {
     console.log('==============================================');
 });
 
-// Add error handling for unhandled promise rejections (important for background tasks)
+// Add error handling for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
     // Application specific logging, throwing an error, or other logic here
